@@ -52,6 +52,28 @@
     footer a {
       color: #555;
     }
+
+    #map-container {
+      width: 100%;
+      max-width: 800px;
+    }
+
+    #map-container svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    #map-container path {
+      fill: #b0bec5;
+      stroke: #fff;
+      stroke-width: 0.5;
+    }
+
+    #loading {
+      color: #888;
+      font-size: 0.95rem;
+    }
   </style>
 </head>
 <body>
@@ -60,7 +82,9 @@
   </header>
 
   <main id="app">
-    <!-- 地図・グラフをここに描画 -->
+    <div id="map-container">
+      <p id="loading">地図データを読み込み中...</p>
+    </div>
   </main>
 
   <footer>
@@ -68,7 +92,84 @@
   </footer>
 
   <script>
-    // ここにアプリのロジックを追加していく
+    const MAP_URL = "https://raw.githubusercontent.com/dataofjapan/land/master/japan.topojson";
+
+    const WIDTH = 800;
+    const HEIGHT = 700;
+
+    // 沖縄インセット（左上）のサイズと位置
+    const INSET_X = 8;
+    const INSET_Y = 8;
+    const INSET_W = 170;
+    const INSET_H = 130;
+
+    const svg = d3.select("#map-container")
+      .append("svg")
+      .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
+
+    // ① 本土用投影：沖縄を除くぶん大きくスケールアップ
+    const mainProjection = d3.geoMercator()
+      .center([136, 37.5])
+      .scale(1850)
+      .translate([WIDTH / 2 + 40, HEIGHT / 2 + 20]);
+
+    // ② 沖縄インセット用投影：琉球列島の中心付近を基準
+    const okinawaProjection = d3.geoMercator()
+      .center([127.5, 26])
+      .scale(1600)
+      .translate([INSET_W / 2, INSET_H / 2]);
+
+    const mainPath    = d3.geoPath().projection(mainProjection);
+    const okinawaPath = d3.geoPath().projection(okinawaProjection);
+
+    d3.json(MAP_URL).then(topology => {
+      document.getElementById("loading").remove();
+
+      const features  = topojson.feature(topology, topology.objects.japan).features;
+      const mainland  = features.filter(f => f.properties.nam_ja !== "沖縄県");
+      const okinawa   = features.filter(f => f.properties.nam_ja === "沖縄県");
+
+      // 本土の描画
+      svg.selectAll("path.pref")
+        .data(mainland)
+        .enter()
+        .append("path")
+        .attr("class", "pref")
+        .attr("d", mainPath);
+
+      // 沖縄インセットのグループ（左上に移動）
+      const inset = svg.append("g")
+        .attr("transform", `translate(${INSET_X}, ${INSET_Y})`);
+
+      // 枠線
+      inset.append("rect")
+        .attr("width", INSET_W)
+        .attr("height", INSET_H)
+        .attr("fill", "#e8eef4")
+        .attr("stroke", "#aaa")
+        .attr("stroke-width", 1)
+        .attr("rx", 3);
+
+      // 沖縄の島々を描画
+      inset.selectAll("path.okinawa")
+        .data(okinawa)
+        .enter()
+        .append("path")
+        .attr("class", "okinawa")
+        .attr("d", okinawaPath);
+
+      // ラベル
+      inset.append("text")
+        .attr("x", 6)
+        .attr("y", INSET_H - 6)
+        .attr("font-size", "10px")
+        .attr("fill", "#555")
+        .text("沖縄県");
+
+    }).catch(() => {
+      document.getElementById("loading").textContent =
+        "地図データの読み込みに失敗しました。インターネット接続を確認してください。";
+    });
   </script>
 </body>
 </html>
