@@ -133,8 +133,8 @@
     // ----------------------------------------------------------------
     const INSET_X = 8;   // 枠の左端の位置
     const INSET_Y = 8;   // 枠の上端の位置
-    const INSET_W = 170; // 枠の幅
-    const INSET_H = 130; // 枠の高さ
+    const INSET_W = 440; // 枠の幅
+    const INSET_H = 340; // 枠の高さ
 
     // ----------------------------------------------------------------
     // SVG要素を #map-container の中に作成する
@@ -158,11 +158,12 @@
 
     // ----------------------------------------------------------------
     // ② 沖縄インセット用の投影（琉球列島中心に別スケールで設定）
+    //    center を少し西寄り（126°E）にすることで石垣島まで枠内に収める
     //    translateはインセット枠内の中央を指定
     // ----------------------------------------------------------------
     const okinawaProjection = d3.geoMercator()
-      .center([127.5, 26])
-      .scale(1600)
+      .center([126, 26])
+      .scale(4000)
       .translate([INSET_W / 2, INSET_H / 2]);
 
     // 投影をもとに「GeoJSONの座標 → SVGのpath文字列」を生成する関数
@@ -193,6 +194,15 @@
         .attr("d", mainPath);  // 座標をSVGパス文字列に変換して描画
 
       // ---- 沖縄インセットの作成 ----
+      // clipPath：インセット枠からはみ出した島を切り抜く
+      // defsに登録しておくことでSVG内の任意の要素から参照できる
+      svg.append("defs")
+        .append("clipPath")
+        .attr("id", "okinawa-clip")
+        .append("rect")
+        .attr("width", INSET_W)
+        .attr("height", INSET_H);
+
       // SVG内に <g>（グループ）を作り、左上の位置に移動させる
       const inset = svg.append("g")
         .attr("transform", `translate(${INSET_X}, ${INSET_Y})`);
@@ -206,15 +216,18 @@
         .attr("stroke-width", 1)
         .attr("rx", 3);            /* 角を少し丸める */
 
-      // 沖縄の島々を描画（インセット用の別投影を使用）
-      inset.selectAll("path.okinawa")
+      // clip-path を適用した子グループに沖縄の島々を描画
+      // これにより枠の外にはみ出た部分が自動的に隠れる
+      inset.append("g")
+        .attr("clip-path", "url(#okinawa-clip)")
+        .selectAll("path.okinawa")
         .data(okinawa)
         .enter()
         .append("path")
         .attr("class", "okinawa")
         .attr("d", okinawaPath);
 
-      // インセット左下に「沖縄県」のラベルを表示
+      // インセット左下に「沖縄県」のラベルを表示（clipの外なので常に見える）
       inset.append("text")
         .attr("x", 6)
         .attr("y", INSET_H - 6)
