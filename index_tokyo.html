@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<!-- 東京都 市区町村マップ テストファイル
+     本番実装前の動作確認用。GeoJSONの表示確認が目的。 -->
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>東京都 市区町村マップ（テスト）</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Hiragino Sans", "Meiryo", sans-serif;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    header {
+      background: #1a237e;
+      color: white;
+      padding: 14px 20px;
+      font-size: 1.1rem;
+      font-weight: bold;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      gap: 12px;
+    }
+
+    /* デバッグ情報パネル */
+    #debug {
+      width: 100%;
+      max-width: 800px;
+      background: #1e1e1e;
+      color: #0f0;
+      font-family: monospace;
+      font-size: 0.8rem;
+      padding: 10px 14px;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    #map-container {
+      width: 100%;
+      max-width: 800px;
+    }
+
+    #map-container svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      border: 1px solid #ddd;
+      background: #fff;
+    }
+
+    path.city {
+      stroke: #fff;
+      stroke-width: 0.5;
+    }
+
+    path.city:hover {
+      stroke: #1a237e;
+      stroke-width: 1.5;
+      cursor: pointer;
+    }
+
+    #tooltip {
+      position: fixed;
+      background: rgba(0,0,0,0.75);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+    }
+
+    #status {
+      font-size: 0.9rem;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <header>東京都 市区町村マップ（テスト）</header>
+  <main>
+    <div id="debug">読み込み中...</div>
+    <p id="status"></p>
+    <div id="map-container">
+      <svg id="svg" viewBox="0 0 800 700"></svg>
+    </div>
+  </main>
+  <div id="tooltip"></div>
+
+  <script>
+    const WIDTH  = 800;
+    const HEIGHT = 700;
+
+    // 東京都のCSVデータ（地域コード → {name, count}）
+    // ※ CSVの地域コードを5桁にゼロパディングしてGeoJSONのN03_007と突合
+    const CSV_URL = "data/city202603_utf8.csv";
+
+    // 全国市区町村GeoJSON（都道府県別ファイルは不完全なため全国版を使用）
+    const GEO_URL =
+      "https://raw.githubusercontent.com/smartnews-smri/japan-topography" +
+      "/main/data/municipality/geojson/s0010/N03-21_210101.json";
+
+    const log = (...args) => {
+      const el = document.getElementById("debug");
+      el.textContent += "\n" + args.join(" ");
+      el.scrollTop = el.scrollHeight;
+    };
+
+    const tooltip = d3.select("#tooltip");
+    const svg     = d3.select("#svg");
+    const g       = svg.append("g");
+
+    const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
+
+    document.getElementById("debug").textContent = "データ読み込み開始...";
+
+    Promise.all([
+      d3.csv(CSV_URL),
+      d3.json(GEO_URL)
+    ]).then(([csvRows, geoJson]) => {
+
+      // ---- CSVから東京都データを抽出 ----
+      const tokyoRows = csvRows.filter(d => d["都道府県名"] === "東京都");
+      log(`CSV: 東京都 ${tokyoRows.length} 件`);
+
+      const cityDataMap = new Map(
+        tokyoRows.map(d => [
+          String(+d["地域コード"]).padStart(5, "0"),
+          { name: d["地域名称"], count: +d["人数"] }
+        ])
+      );
+      log("CSVコード例:", [...cityDataMap.keys()].slice(0, 3).join(", "));
+
+      // ---- GeoJSONから東京都（コード先頭が"13"）を抽出 ----
+      const tokyoFeatures = geoJson.features.filter(f =>
+        f.properties.N03_007?.startsWith("13")
+      );
+      log(`GeoJSON: 東京都フィーチャー ${tokyoFeatures.length} 件`);
+
+      if (tokyoFeatures.length === 0) {
+        log("⚠ フィーチャーが0件。コードを確認します...");
+        // 先頭10件のN03_007を表示して確認
+        geoJson.features.slice(0, 10).forEach(f =>
+          log(" N03_007:", f.properties.N03_007, "N03_004:", f.properties.N03_004)
+        );
+        return;
+      }
+
+      // 先頭3件のフィーチャー情報をデバッグ出力
+      tokyoFeatures.slice(0, 3).forEach(f => {
+        const coords = f.geometry?.coordinates;
+        const firstCoord = Array.isArray(coords?.[0]?.[0])
+          ? coords[0][0]
+          : coords?.[0];
+        log(`[${f.properties.N03_007}] ${f.properties.N03_004 || f.properties.N03_003}`
+          + ` 座標例: ${JSON.stringify(firstCoord?.slice(0, 2))}`);
+      });
+
+      // GeoJSONコードとCSVコードの突合確認
+      const matched = tokyoFeatures.filter(f => cityDataMap.has(f.properties.N03_007));
+      log(`突合: ${matched.length} / ${tokyoFeatures.length} 件マッチ`);
+
+      // ---- 投影を東京都にフィット ----
+      const prefGeoJson = { type: "FeatureCollection", features: tokyoFeatures };
+      const projection = d3.geoMercator()
+        .fitExtent([[20, 20], [WIDTH - 20, HEIGHT - 20]], prefGeoJson);
+      const pathGen = d3.geoPath().projection(projection);
+
+      // 投影後の座標範囲を確認
+      const testPath = pathGen(tokyoFeatures[0]);
+      log("SVGパス先頭:", testPath?.substring(0, 60));
+
+      // ---- 色スケール ----
+      const maxCount = d3.max([...cityDataMap.values()], v => v.count) || 1;
+      const colorScale = d3.scaleSequential()
+        .domain([0, maxCount])
+        .interpolator(redsInterpolator);
+
+      // ---- 描画 ----
+      g.selectAll("path.city")
+        .data(tokyoFeatures)
+        .enter()
+        .append("path")
+        .attr("class", "city")
+        .attr("d", pathGen)
+        .attr("fill", f => {
+          const data = cityDataMap.get(f.properties.N03_007);
+          return data ? colorScale(data.count) : "#d0d0d0";
+        })
+        .on("mouseover", (event, f) => {
+          const data = cityDataMap.get(f.properties.N03_007);
+          const name = data?.name
+            ?? [f.properties.N03_003, f.properties.N03_004].filter(Boolean).join("")
+            ?? "不明";
+          const countStr = data
+            ? data.count.toLocaleString("ja-JP") + " 人"
+            : "データなし";
+          tooltip
+            .style("display", "block")
+            .html(`<strong>${name}</strong><br>来訪者数：${countStr}`);
+        })
+        .on("mousemove", event => {
+          tooltip
+            .style("left", (event.clientX + 14) + "px")
+            .style("top",  (event.clientY - 34) + "px");
+        })
+        .on("mouseout", () => tooltip.style("display", "none"));
+
+      document.getElementById("status").textContent =
+        `東京都の市区町村 ${tokyoFeatures.length} 件を表示中`;
+      log("描画完了");
+
+    }).catch(err => {
+      log("エラー:", err.message);
+    });
+  </script>
+</body>
+</html>
