@@ -73,7 +73,77 @@
        SVGを画面幅に合わせてレスポンシブに表示する */
     #map-container {
       width: 100%;
-      max-width: 800px; /* PC画面では最大800pxに制限 */
+      max-width: 800px;
+    }
+
+    /* ========== モード切替トグルスイッチ ==========
+       position: fixed = スクロールしても画面右上に常に固定される
+       スマホ・PCどちらでも地図と重ならず操作しやすい */
+    #mode-toggle-wrap {
+      position: fixed;
+      top: 70px;  /* ヘッダーの高さ分だけ下げる */
+      right: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+      z-index: 10; /* 地図SVGより手前に表示 */
+    }
+
+    /* トグルのラベル：非アクティブは薄く、アクティブは太字 */
+    .toggle-label {
+      color: #aaa;
+      transition: color 0.2s;
+    }
+    .toggle-label.active {
+      color: #333;
+      font-weight: bold;
+    }
+
+    /* チェックボックスをスライドスイッチに見せるCSS */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+    /* 実際のチェックボックスは非表示にする */
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    /* スイッチの土台（トラック）：来訪者数モード（薄い赤） */
+    .toggle-knob {
+      position: absolute;
+      inset: 0;
+      background: #e57373;
+      border-radius: 24px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    /* スイッチのつまみ（白い丸） */
+    .toggle-knob::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.3s;
+    }
+    /* チェック状態（人口比モード）：赤系に変色し、つまみが右に移動 */
+    .toggle-switch input:checked + .toggle-knob {
+      background: #c62828;
+    }
+    .toggle-switch input:checked + .toggle-knob::before {
+      transform: translateX(20px);
     }
 
     #map-container svg {
@@ -132,6 +202,16 @@
       <!-- 地図が読み込まれるまで表示するメッセージ -->
       <p id="loading">地図データを読み込み中...</p>
     </div>
+
+    <!-- モード切替トグルスイッチ（画面右上に固定表示） -->
+    <div id="mode-toggle-wrap">
+      <span class="toggle-label active" id="label-visitors">来訪者数</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="mode-toggle">
+        <span class="toggle-knob"></span>
+      </label>
+      <span class="toggle-label" id="label-ratio">人口比</span>
+    </div>
   </main>
 
   <!-- ========== ツールチップ ==========
@@ -162,6 +242,9 @@
     const INSET_Y = 8;
     const INSET_W = 440;
     const INSET_H = 340;
+
+    // 現在の表示モード："visitors"（観光者数）or "ratio"（人口比）
+    let mode = "visitors";
 
     // SVG要素を作成（viewBoxでレスポンシブ対応）
     const svg = d3.select("#map-container")
@@ -221,17 +304,32 @@
       }
 
       // ----------------------------------------------------------------
-      // 色スケール：人口比率0〜最大値 → 薄い赤〜濃い赤
+      // 連続赤スケール：最小値→薄い赤、最大値→濃い赤
+      //
+      // domain を [0, 最大値] でなく [最小値, 最大値] にする理由：
+      // 全都道府県に必ず来訪者がいるため 0 を使うと色の差が潰れる。
+      // 実際のデータの幅だけを使うことで赤のグラデーションをフルに活用できる。
+      //
+      // interpolateReds(0.2 + 0.8 * t) にする理由：
+      // t=0 の素の interpolateReds はほぼ白になるため、
+      // 下限を 0.2 にずらして最小値でも「薄い赤」が見えるようにする。
       // ----------------------------------------------------------------
-      const maxRatio = d3.max(ratioMap.values());
-      const colorScale = d3.scaleSequential()
-        .domain([0, maxRatio])
-        .interpolator(d3.interpolateReds);
+      const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
 
-      // 都道府県フィーチャーから塗り色を返すヘルパー関数
+      const visitorsScale = d3.scaleSequential()
+        .domain([d3.min(visitorsMap.values()), d3.max(visitorsMap.values())])
+        .interpolator(redsInterpolator);
+
+      const ratioScale = d3.scaleSequential()
+        .domain([d3.min(ratioMap.values()), d3.max(ratioMap.values())])
+        .interpolator(redsInterpolator);
+
+      // 現在のモードに応じて塗り色を返すヘルパー関数
       const getFill = d => {
-        const ratio = ratioMap.get(d.properties.nam_ja) || 0;
-        return colorScale(ratio);
+        const pref = d.properties.nam_ja;
+        return mode === "visitors"
+          ? visitorsScale(visitorsMap.get(pref) || 0)
+          : ratioScale(ratioMap.get(pref) || 0);
       };
 
       // 数値を「1,234,567」形式にフォーマットするヘルパー関数
@@ -335,6 +433,19 @@
         .attr("font-size", "10px")
         .attr("fill", "#555")
         .text("沖縄県");
+
+      // ----------------------------------------------------------------
+      // トグルスイッチの切り替えイベント
+      // モードを更新 → 全都道府県を再塗色 → ラベルの強調を切り替え
+      // ----------------------------------------------------------------
+      document.getElementById("mode-toggle").addEventListener("change", function() {
+        mode = this.checked ? "ratio" : "visitors";
+        // SVG上の全都道府県パスを新しいモードの色で塗り直す
+        svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
+        // ラベルのアクティブ状態を切り替える
+        document.getElementById("label-visitors").classList.toggle("active", mode === "visitors");
+        document.getElementById("label-ratio").classList.toggle("active",   mode === "ratio");
+      });
 
     }).catch(() => {
       document.getElementById("loading").textContent =
