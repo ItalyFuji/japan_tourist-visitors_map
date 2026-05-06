@@ -94,6 +94,27 @@
       color: #888;
       font-size: 0.95rem;
     }
+
+    /* ========== ツールチップ ==========
+       カーソルに追従する小さな吹き出し。
+       position: fixed = スクロール位置に関係なく画面上の絶対位置で表示
+       pointer-events: none = ツールチップ自身がマウスイベントを邪魔しないようにする */
+    #tooltip {
+      position: fixed;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      pointer-events: none;
+      display: none; /* 初期状態は非表示 */
+      white-space: nowrap; /* 都道府県名を折り返さない */
+    }
+
+    /* ホバー時にカーソルをポインター（手の形）にする */
+    #map-container path.pref {
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -111,6 +132,10 @@
       <p id="loading">地図データを読み込み中...</p>
     </div>
   </main>
+
+  <!-- ========== ツールチップ ==========
+       JavaScriptがカーソル位置に合わせてここを移動・表示/非表示する -->
+  <div id="tooltip"></div>
 
   <!-- ========== フッター（出典クレジット） ========== -->
   <footer>
@@ -185,13 +210,37 @@
       const mainland = features.filter(f => f.properties.nam_ja !== "沖縄県");
       const okinawa  = features.filter(f => f.properties.nam_ja === "沖縄県");
 
+      // ツールチップ要素をD3で取得しておく
+      const tooltip = d3.select("#tooltip");
+
       // ---- 本土の都道府県を描画 ----
       svg.selectAll("path.pref")
         .data(mainland)        // データと描画要素を紐付け
         .enter()               // データの数だけ要素を追加
         .append("path")
         .attr("class", "pref")
-        .attr("d", mainPath);  // 座標をSVGパス文字列に変換して描画
+        .attr("d", mainPath)   // 座標をSVGパス文字列に変換して描画
+
+        // カーソルが乗ったとき：都道府県名を表示＋色を少し暗くする
+        .on("mouseover", function(event, d) {
+          d3.select(this).attr("fill", "#78909c"); // ホバー色（やや暗いグレー）
+          tooltip
+            .style("display", "block")
+            .text(d.properties.nam_ja); // 都道府県名（例：「東京都」）
+        })
+
+        // カーソルが動くたびに：ツールチップをカーソルの少し右上に追従させる
+        .on("mousemove", function(event) {
+          tooltip
+            .style("left", (event.clientX + 14) + "px")
+            .style("top",  (event.clientY - 34) + "px");
+        })
+
+        // カーソルが離れたとき：ツールチップを隠して色を元に戻す
+        .on("mouseout", function() {
+          d3.select(this).attr("fill", null); // CSSのデフォルト色に戻す
+          tooltip.style("display", "none");
+        });
 
       // ---- 沖縄インセットの作成 ----
       // clipPath：インセット枠からはみ出した島を切り抜く
@@ -225,7 +274,23 @@
         .enter()
         .append("path")
         .attr("class", "okinawa")
-        .attr("d", okinawaPath);
+        .attr("d", okinawaPath)
+        .style("cursor", "pointer")
+        .on("mouseover", function(event, d) {
+          d3.select(this).attr("fill", "#78909c");
+          tooltip
+            .style("display", "block")
+            .text(d.properties.nam_ja);
+        })
+        .on("mousemove", function(event) {
+          tooltip
+            .style("left", (event.clientX + 14) + "px")
+            .style("top",  (event.clientY - 34) + "px");
+        })
+        .on("mouseout", function() {
+          d3.select(this).attr("fill", null);
+          tooltip.style("display", "none");
+        });
 
       // インセット左下に「沖縄県」のラベルを表示（clipの外なので常に見える）
       inset.append("text")
