@@ -1,29 +1,43 @@
 <!DOCTYPE html>
+<!-- ============================================================
+  日本 観光来訪者数マップ
+  - 単一HTMLファイルで完結（CSS・JavaScriptをこのファイルに内包）
+  - GitHub Pages でそのまま公開できる静的サイト
+  ============================================================ -->
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
+  <!-- スマホでも正しく表示されるよう画面幅に合わせる指示 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>日本 観光来訪者数マップ</title>
+
+  <!-- D3.js：グラフ・地図を描くためのライブラリ（インターネット上から読み込む） -->
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <!-- topojson-client：地図データ（TopoJSON形式）をD3が扱える形に変換するライブラリ -->
   <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+
   <style>
+    /* ========== リセット ==========
+       ブラウザごとのデフォルトスタイルの差をなくす */
     * {
-      box-sizing: border-box;
+      box-sizing: border-box; /* 幅の計算にpaddingを含める */
       margin: 0;
       padding: 0;
     }
 
+    /* ========== ページ全体 ========== */
     body {
       font-family: "Hiragino Sans", "Meiryo", sans-serif;
       background: #f5f5f5;
       color: #333;
-      min-height: 100vh;
+      min-height: 100vh;    /* ページの高さを画面の高さに合わせる */
       display: flex;
-      flex-direction: column;
+      flex-direction: column; /* header・main・footer を縦に並べる */
     }
 
+    /* ========== ヘッダー ========== */
     header {
-      background: #1a237e;
+      background: #1a237e; /* 紺色 */
       color: white;
       padding: 16px 24px;
     }
@@ -33,14 +47,16 @@
       font-weight: bold;
     }
 
+    /* ========== メインエリア（地図を置く場所） ========== */
     main {
-      flex: 1;
+      flex: 1; /* ヘッダーとフッターの間を埋めるよう縦に伸びる */
       display: flex;
-      align-items: center;
-      justify-content: center;
+      align-items: center;    /* 垂直方向：中央揃え */
+      justify-content: center; /* 水平方向：中央揃え */
       padding: 24px;
     }
 
+    /* ========== フッター ========== */
     footer {
       background: #eee;
       color: #666;
@@ -53,23 +69,27 @@
       color: #555;
     }
 
+    /* ========== 地図コンテナ ==========
+       SVGを画面幅に合わせてレスポンシブに表示する */
     #map-container {
       width: 100%;
-      max-width: 800px;
+      max-width: 800px; /* PC画面では最大800pxに制限 */
     }
 
     #map-container svg {
       width: 100%;
-      height: auto;
+      height: auto;  /* viewBoxの比率を保ったまま縮小 */
       display: block;
     }
 
+    /* 都道府県の塗り色・境界線の色 */
     #map-container path {
-      fill: #b0bec5;
-      stroke: #fff;
+      fill: #b0bec5;      /* グレー（後でデータで色分けする） */
+      stroke: #fff;       /* 境界線：白 */
       stroke-width: 0.5;
     }
 
+    /* 読み込み中テキスト */
     #loading {
       color: #888;
       font-size: 0.95rem;
@@ -77,80 +97,116 @@
   </style>
 </head>
 <body>
+
+  <!-- ========== ヘッダー ========== -->
   <header>
     <h1>日本 観光来訪者数マップ（2026年3月）</h1>
   </header>
 
+  <!-- ========== メインエリア ==========
+       JavaScriptがここにSVG地図を挿入する -->
   <main id="app">
     <div id="map-container">
+      <!-- 地図が読み込まれるまで表示するメッセージ -->
       <p id="loading">地図データを読み込み中...</p>
     </div>
   </main>
 
+  <!-- ========== フッター（出典クレジット） ========== -->
   <footer>
     出典：<a href="https://www.nihon-kankou.or.jp/home/jigyou/research/d-toukei/" target="_blank">デジタル観光統計オープンデータ</a>を加工して作成（2026年3月利用）
   </footer>
 
   <script>
+    // ================================================================
+    // 地図データの取得先URL（GitHub上の日本TopoJSONファイル）
+    // ================================================================
     const MAP_URL = "https://raw.githubusercontent.com/dataofjapan/land/master/japan.topojson";
 
-    const WIDTH = 800;
+    // SVG仮想キャンバスのサイズ（ピクセル単位の論理サイズ）
+    // 実際の表示サイズはCSSで制御するのでこれはあくまで比率の基準
+    const WIDTH  = 800;
     const HEIGHT = 700;
 
-    // 沖縄インセット（左上）のサイズと位置
-    const INSET_X = 8;
-    const INSET_Y = 8;
-    const INSET_W = 170;
-    const INSET_H = 130;
+    // ----------------------------------------------------------------
+    // 沖縄インセット（左上の小枠）の設定
+    // ----------------------------------------------------------------
+    const INSET_X = 8;   // 枠の左端の位置
+    const INSET_Y = 8;   // 枠の上端の位置
+    const INSET_W = 170; // 枠の幅
+    const INSET_H = 130; // 枠の高さ
 
+    // ----------------------------------------------------------------
+    // SVG要素を #map-container の中に作成する
+    // viewBox を指定することでレスポンシブ対応になる
+    // ----------------------------------------------------------------
     const svg = d3.select("#map-container")
       .append("svg")
       .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
 
-    // ① 本土用投影：沖縄を除くぶん大きくスケールアップ
+    // ----------------------------------------------------------------
+    // ① 本土用の「投影」（緯度経度 → 画面XY座標への変換ルール）
+    //    沖縄を除いた分、scaleを大きくして本土を拡大表示
+    //    center: 地図の中心となる緯度経度 [経度, 緯度]
+    //    scale:  値が大きいほど地図が拡大される
+    //    translate: 地図の中心を画面のどこに置くか [X, Y]
+    // ----------------------------------------------------------------
     const mainProjection = d3.geoMercator()
       .center([136, 37.5])
       .scale(1850)
       .translate([WIDTH / 2 + 40, HEIGHT / 2 + 20]);
 
-    // ② 沖縄インセット用投影：琉球列島の中心付近を基準
+    // ----------------------------------------------------------------
+    // ② 沖縄インセット用の投影（琉球列島中心に別スケールで設定）
+    //    translateはインセット枠内の中央を指定
+    // ----------------------------------------------------------------
     const okinawaProjection = d3.geoMercator()
       .center([127.5, 26])
       .scale(1600)
       .translate([INSET_W / 2, INSET_H / 2]);
 
+    // 投影をもとに「GeoJSONの座標 → SVGのpath文字列」を生成する関数
     const mainPath    = d3.geoPath().projection(mainProjection);
     const okinawaPath = d3.geoPath().projection(okinawaProjection);
 
+    // ================================================================
+    // 地図データ（TopoJSON）をURLから非同期で取得して描画する
+    // ================================================================
     d3.json(MAP_URL).then(topology => {
+
+      // 読み込み完了したら「読み込み中...」テキストを削除
       document.getElementById("loading").remove();
 
-      const features  = topojson.feature(topology, topology.objects.japan).features;
-      const mainland  = features.filter(f => f.properties.nam_ja !== "沖縄県");
-      const okinawa   = features.filter(f => f.properties.nam_ja === "沖縄県");
+      // TopoJSON → GeoJSONの都道府県フィーチャー配列に変換
+      const features = topojson.feature(topology, topology.objects.japan).features;
 
-      // 本土の描画
+      // 本土（沖縄以外）と沖縄に分ける
+      const mainland = features.filter(f => f.properties.nam_ja !== "沖縄県");
+      const okinawa  = features.filter(f => f.properties.nam_ja === "沖縄県");
+
+      // ---- 本土の都道府県を描画 ----
       svg.selectAll("path.pref")
-        .data(mainland)
-        .enter()
+        .data(mainland)        // データと描画要素を紐付け
+        .enter()               // データの数だけ要素を追加
         .append("path")
         .attr("class", "pref")
-        .attr("d", mainPath);
+        .attr("d", mainPath);  // 座標をSVGパス文字列に変換して描画
 
-      // 沖縄インセットのグループ（左上に移動）
+      // ---- 沖縄インセットの作成 ----
+      // SVG内に <g>（グループ）を作り、左上の位置に移動させる
       const inset = svg.append("g")
         .attr("transform", `translate(${INSET_X}, ${INSET_Y})`);
 
-      // 枠線
+      // インセットの背景枠
       inset.append("rect")
         .attr("width", INSET_W)
         .attr("height", INSET_H)
-        .attr("fill", "#e8eef4")
-        .attr("stroke", "#aaa")
+        .attr("fill", "#e8eef4")   /* 薄い青灰色 */
+        .attr("stroke", "#aaa")    /* 枠線：グレー */
         .attr("stroke-width", 1)
-        .attr("rx", 3);
+        .attr("rx", 3);            /* 角を少し丸める */
 
-      // 沖縄の島々を描画
+      // 沖縄の島々を描画（インセット用の別投影を使用）
       inset.selectAll("path.okinawa")
         .data(okinawa)
         .enter()
@@ -158,7 +214,7 @@
         .attr("class", "okinawa")
         .attr("d", okinawaPath);
 
-      // ラベル
+      // インセット左下に「沖縄県」のラベルを表示
       inset.append("text")
         .attr("x", 6)
         .attr("y", INSET_H - 6)
@@ -167,6 +223,7 @@
         .text("沖縄県");
 
     }).catch(() => {
+      // 取得失敗時（オフライン・URLエラーなど）のエラーメッセージ
       document.getElementById("loading").textContent =
         "地図データの読み込みに失敗しました。インターネット接続を確認してください。";
     });
