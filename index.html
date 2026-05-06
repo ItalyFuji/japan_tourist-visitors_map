@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日本 観光来訪者数マップ</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Hiragino Sans", "Meiryo", sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: #1a237e;
+      color: white;
+      padding: 16px 24px;
+    }
+
+    header h1 {
+      font-size: 1.4rem;
+      font-weight: bold;
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    footer {
+      background: #eee;
+      color: #666;
+      font-size: 0.75rem;
+      text-align: center;
+      padding: 12px 16px;
+    }
+
+    footer a {
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>日本 観光来訪者数マップ（2026年3月）</h1>
+  </header>
+
+  <main id="app">
+    <!-- 地図・グラフをここに描画 -->
+  </main>
+
+  <footer>
+    出典：<a href="https://www.nihon-kankou.or.jp/home/jigyou/research/d-toukei/" target="_blank">デジタル観光統計オープンデータ</a>を加工して作成（2026年3月利用）
+  </footer>
+
+  <script>
+    // ここにアプリのロジックを追加していく
+  </script>
+</body>
+</html>
