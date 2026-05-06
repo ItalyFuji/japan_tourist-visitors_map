@@ -82,11 +82,16 @@
       display: block;
     }
 
-    /* 都道府県の塗り色・境界線の色 */
+    /* 都道府県の境界線（塗り色はJavaScriptがデータに基づいて設定する） */
     #map-container path {
-      fill: #b0bec5;      /* グレー（後でデータで色分けする） */
-      stroke: #fff;       /* 境界線：白 */
+      stroke: #fff;
       stroke-width: 0.5;
+    }
+
+    /* ホバー時にカーソルをポインター（手の形）にする */
+    #map-container path.pref,
+    #map-container path.okinawa {
+      cursor: pointer;
     }
 
     /* 読み込み中テキスト */
@@ -111,10 +116,6 @@
       white-space: nowrap; /* 都道府県名を折り返さない */
     }
 
-    /* ホバー時にカーソルをポインター（手の形）にする */
-    #map-container path.pref {
-      cursor: pointer;
-    }
   </style>
 </head>
 <body>
@@ -144,107 +145,156 @@
 
   <script>
     // ================================================================
-    // 地図データの取得先URL（GitHub上の日本TopoJSONファイル）
+    // データ取得先
     // ================================================================
     const MAP_URL = "https://raw.githubusercontent.com/dataofjapan/land/master/japan.topojson";
+    const CSV_URL = "data/city202603_utf8.csv"; // 観光来訪者数（市区町村単位）
+    const POP_URL = "data/population_pref.csv"; // 都道府県別人口（総務省 住民基本台帳）
 
-    // SVG仮想キャンバスのサイズ（ピクセル単位の論理サイズ）
-    // 実際の表示サイズはCSSで制御するのでこれはあくまで比率の基準
+    // SVG仮想キャンバスのサイズ（実際の表示サイズはCSSが制御する）
     const WIDTH  = 800;
     const HEIGHT = 700;
 
     // ----------------------------------------------------------------
     // 沖縄インセット（左上の小枠）の設定
     // ----------------------------------------------------------------
-    const INSET_X = 8;   // 枠の左端の位置
-    const INSET_Y = 8;   // 枠の上端の位置
-    const INSET_W = 440; // 枠の幅
-    const INSET_H = 340; // 枠の高さ
+    const INSET_X = 8;
+    const INSET_Y = 8;
+    const INSET_W = 440;
+    const INSET_H = 340;
 
-    // ----------------------------------------------------------------
-    // SVG要素を #map-container の中に作成する
-    // viewBox を指定することでレスポンシブ対応になる
-    // ----------------------------------------------------------------
+    // SVG要素を作成（viewBoxでレスポンシブ対応）
     const svg = d3.select("#map-container")
       .append("svg")
       .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
 
-    // ----------------------------------------------------------------
-    // ① 本土用の「投影」（緯度経度 → 画面XY座標への変換ルール）
-    //    沖縄を除いた分、scaleを大きくして本土を拡大表示
-    //    center: 地図の中心となる緯度経度 [経度, 緯度]
-    //    scale:  値が大きいほど地図が拡大される
-    //    translate: 地図の中心を画面のどこに置くか [X, Y]
-    // ----------------------------------------------------------------
+    // ① 本土用の投影（緯度経度 → 画面XY座標）
     const mainProjection = d3.geoMercator()
       .center([136, 37.5])
       .scale(1850)
       .translate([WIDTH / 2 + 40, HEIGHT / 2 + 20]);
 
-    // ----------------------------------------------------------------
-    // ② 沖縄インセット用の投影（琉球列島中心に別スケールで設定）
-    //    center を少し西寄り（126°E）にすることで石垣島まで枠内に収める
-    //    translateはインセット枠内の中央を指定
-    // ----------------------------------------------------------------
+    // ② 沖縄インセット用の投影（126°E 中心で石垣島まで収める）
     const okinawaProjection = d3.geoMercator()
       .center([126, 26])
       .scale(4000)
       .translate([INSET_W / 2, INSET_H / 2]);
 
-    // 投影をもとに「GeoJSONの座標 → SVGのpath文字列」を生成する関数
     const mainPath    = d3.geoPath().projection(mainProjection);
     const okinawaPath = d3.geoPath().projection(okinawaProjection);
 
     // ================================================================
-    // 地図データ（TopoJSON）をURLから非同期で取得して描画する
+    // 地図・観光データ・人口データを同時に読み込む
+    // Promise.all = 複数の非同期処理を並行して実行し、全部終わったら次へ進む
     // ================================================================
-    d3.json(MAP_URL).then(topology => {
+    Promise.all([
+      d3.json(MAP_URL),
+      d3.csv(CSV_URL),
+      d3.csv(POP_URL)
+    ]).then(([topology, csvRows, popRows]) => {
 
-      // 読み込み完了したら「読み込み中...」テキストを削除
       document.getElementById("loading").remove();
 
-      // TopoJSON → GeoJSONの都道府県フィーチャー配列に変換
+      // ----------------------------------------------------------------
+      // 観光CSVを都道府県ごとの来訪者数合計に集計する
+      // 結果は Map（辞書）形式：{ "北海道" => 1234567, ... }
+      // ----------------------------------------------------------------
+      const visitorsMap = d3.rollup(
+        csvRows,
+        rows => d3.sum(rows, d => +d["人数"]),
+        d => d["都道府県名"]
+      );
+
+      // ----------------------------------------------------------------
+      // 人口CSVを { "北海道" => 5044825, ... } の辞書に変換する
+      // ----------------------------------------------------------------
+      const popMap = new Map(popRows.map(d => [d["都道府県名"], +d["人口"]]));
+
+      // ----------------------------------------------------------------
+      // 人口比率を計算する：来訪者数 ÷ 人口 × 100 = 「人口100人中X人」
+      // 絶対数ではなく比率にすることで東京一極集中を避けられる
+      // ----------------------------------------------------------------
+      const ratioMap = new Map();
+      for (const [pref, visitors] of visitorsMap) {
+        const pop = popMap.get(pref);
+        if (pop) ratioMap.set(pref, (visitors / pop) * 100);
+      }
+
+      // ----------------------------------------------------------------
+      // 色スケール：人口比率0〜最大値 → 薄い赤〜濃い赤
+      // ----------------------------------------------------------------
+      const maxRatio = d3.max(ratioMap.values());
+      const colorScale = d3.scaleSequential()
+        .domain([0, maxRatio])
+        .interpolator(d3.interpolateReds);
+
+      // 都道府県フィーチャーから塗り色を返すヘルパー関数
+      const getFill = d => {
+        const ratio = ratioMap.get(d.properties.nam_ja) || 0;
+        return colorScale(ratio);
+      };
+
+      // 数値を「1,234,567」形式にフォーマットするヘルパー関数
+      const fmt = n => n.toLocaleString("ja-JP");
+
+      // TopoJSON → GeoJSONに変換し、本土と沖縄に分ける
       const features = topojson.feature(topology, topology.objects.japan).features;
+      const mainland  = features.filter(f => f.properties.nam_ja !== "沖縄県");
+      const okinawa   = features.filter(f => f.properties.nam_ja === "沖縄県");
 
-      // 本土（沖縄以外）と沖縄に分ける
-      const mainland = features.filter(f => f.properties.nam_ja !== "沖縄県");
-      const okinawa  = features.filter(f => f.properties.nam_ja === "沖縄県");
-
-      // ツールチップ要素をD3で取得しておく
       const tooltip = d3.select("#tooltip");
+
+      // ----------------------------------------------------------------
+      // マウスイベントのハンドラ（本土・沖縄で共通）
+      // ----------------------------------------------------------------
+
+      // カーソルが乗ったとき：境界線を強調＋ツールチップ表示
+      const onOver = (event, d) => {
+        d3.select(event.currentTarget)
+          .attr("stroke", "#1a237e")   // 境界線を紺色に
+          .attr("stroke-width", 2);
+        const pref     = d.properties.nam_ja;
+        const visitors = visitorsMap.get(pref) || 0;
+        const ratio    = ratioMap.get(pref);
+        const ratioStr = ratio != null ? ratio.toFixed(1) : "—";
+        tooltip
+          .style("display", "block")
+          .html(
+            `<strong>${pref}</strong><br>` +
+            `来訪者数：${fmt(visitors)} 人<br>` +
+            `人口比率：${ratioStr}%（人口100人中${ratioStr}人）`
+          );
+      };
+
+      // カーソルが動いたとき：ツールチップをカーソルの右上に追従
+      const onMove = (event) => {
+        tooltip
+          .style("left", (event.clientX + 14) + "px")
+          .style("top",  (event.clientY - 34) + "px");
+      };
+
+      // カーソルが離れたとき：境界線を元に戻す＋ツールチップ非表示
+      const onOut = (event) => {
+        d3.select(event.currentTarget)
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 0.5);
+        tooltip.style("display", "none");
+      };
 
       // ---- 本土の都道府県を描画 ----
       svg.selectAll("path.pref")
-        .data(mainland)        // データと描画要素を紐付け
-        .enter()               // データの数だけ要素を追加
+        .data(mainland)
+        .enter()
         .append("path")
         .attr("class", "pref")
-        .attr("d", mainPath)   // 座標をSVGパス文字列に変換して描画
-
-        // カーソルが乗ったとき：都道府県名を表示＋色を少し暗くする
-        .on("mouseover", function(event, d) {
-          d3.select(this).attr("fill", "#78909c"); // ホバー色（やや暗いグレー）
-          tooltip
-            .style("display", "block")
-            .text(d.properties.nam_ja); // 都道府県名（例：「東京都」）
-        })
-
-        // カーソルが動くたびに：ツールチップをカーソルの少し右上に追従させる
-        .on("mousemove", function(event) {
-          tooltip
-            .style("left", (event.clientX + 14) + "px")
-            .style("top",  (event.clientY - 34) + "px");
-        })
-
-        // カーソルが離れたとき：ツールチップを隠して色を元に戻す
-        .on("mouseout", function() {
-          d3.select(this).attr("fill", null); // CSSのデフォルト色に戻す
-          tooltip.style("display", "none");
-        });
+        .attr("d", mainPath)
+        .attr("fill", getFill)  // 来訪者数に応じた色を設定
+        .on("mouseover", onOver)
+        .on("mousemove", onMove)
+        .on("mouseout", onOut);
 
       // ---- 沖縄インセットの作成 ----
-      // clipPath：インセット枠からはみ出した島を切り抜く
-      // defsに登録しておくことでSVG内の任意の要素から参照できる
+      // clipPath：枠からはみ出した島を非表示にする
       svg.append("defs")
         .append("clipPath")
         .attr("id", "okinawa-clip")
@@ -252,21 +302,19 @@
         .attr("width", INSET_W)
         .attr("height", INSET_H);
 
-      // SVG内に <g>（グループ）を作り、左上の位置に移動させる
       const inset = svg.append("g")
         .attr("transform", `translate(${INSET_X}, ${INSET_Y})`);
 
-      // インセットの背景枠
+      // 背景枠
       inset.append("rect")
         .attr("width", INSET_W)
         .attr("height", INSET_H)
-        .attr("fill", "#e8eef4")   /* 薄い青灰色 */
-        .attr("stroke", "#aaa")    /* 枠線：グレー */
+        .attr("fill", "#e8eef4")
+        .attr("stroke", "#aaa")
         .attr("stroke-width", 1)
-        .attr("rx", 3);            /* 角を少し丸める */
+        .attr("rx", 3);
 
-      // clip-path を適用した子グループに沖縄の島々を描画
-      // これにより枠の外にはみ出た部分が自動的に隠れる
+      // 沖縄の島々を描画（clipPathで枠外を切り抜き）
       inset.append("g")
         .attr("clip-path", "url(#okinawa-clip)")
         .selectAll("path.okinawa")
@@ -275,24 +323,12 @@
         .append("path")
         .attr("class", "okinawa")
         .attr("d", okinawaPath)
-        .style("cursor", "pointer")
-        .on("mouseover", function(event, d) {
-          d3.select(this).attr("fill", "#78909c");
-          tooltip
-            .style("display", "block")
-            .text(d.properties.nam_ja);
-        })
-        .on("mousemove", function(event) {
-          tooltip
-            .style("left", (event.clientX + 14) + "px")
-            .style("top",  (event.clientY - 34) + "px");
-        })
-        .on("mouseout", function() {
-          d3.select(this).attr("fill", null);
-          tooltip.style("display", "none");
-        });
+        .attr("fill", getFill)  // 本土と同じ色スケールを適用
+        .on("mouseover", onOver)
+        .on("mousemove", onMove)
+        .on("mouseout", onOut);
 
-      // インセット左下に「沖縄県」のラベルを表示（clipの外なので常に見える）
+      // 「沖縄県」ラベル
       inset.append("text")
         .attr("x", 6)
         .attr("y", INSET_H - 6)
@@ -301,9 +337,8 @@
         .text("沖縄県");
 
     }).catch(() => {
-      // 取得失敗時（オフライン・URLエラーなど）のエラーメッセージ
       document.getElementById("loading").textContent =
-        "地図データの読み込みに失敗しました。インターネット接続を確認してください。";
+        "データの読み込みに失敗しました。インターネット接続とファイルの存在を確認してください。";
     });
   </script>
 </body>
