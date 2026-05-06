@@ -170,6 +170,78 @@
       font-size: 0.95rem;
     }
 
+    /* ========== ビュー切り替え ========== */
+    /* 地図ビュー：幅いっぱいに広げて中央揃え */
+    #view-map {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* 市区町村地図ビュー：初期は非表示 */
+    #view-city {
+      display: none;
+      flex-direction: column;
+      width: 100%;
+      max-width: 800px;
+    }
+
+    /* ========== 市区町村地図ヘッダー ========== */
+    #city-header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 12px 4px;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 8px;
+    }
+
+    #btn-back {
+      background: #1a237e;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    #btn-back:hover {
+      background: #283593;
+    }
+
+    #chart-title {
+      font-size: 1.2rem;
+      font-weight: bold;
+      color: #333;
+    }
+
+    /* ========== 市区町村地図コンテナ ========== */
+    #city-map-container {
+      width: 100%;
+    }
+
+    #city-map-container svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    #city-map-container path.city {
+      stroke: #fff;
+      stroke-width: 0.5;
+      cursor: default;
+      transition: stroke 0.1s, stroke-width 0.1s;
+    }
+
+    #city-loading {
+      color: #888;
+      font-size: 0.95rem;
+      padding: 16px 0;
+    }
+
     /* ========== ツールチップ ==========
        カーソルに追従する小さな吹き出し。
        position: fixed = スクロール位置に関係なく画面上の絶対位置で表示
@@ -195,12 +267,23 @@
     <h1>日本 観光来訪者数マップ（2026年3月）</h1>
   </header>
 
-  <!-- ========== メインエリア ==========
-       JavaScriptがここにSVG地図を挿入する -->
+  <!-- ========== メインエリア ========== -->
   <main id="app">
-    <div id="map-container">
-      <!-- 地図が読み込まれるまで表示するメッセージ -->
-      <p id="loading">地図データを読み込み中...</p>
+
+    <!-- ① 都道府県地図ビュー（初期表示） -->
+    <div id="view-map">
+      <div id="map-container">
+        <p id="loading">地図データを読み込み中...</p>
+      </div>
+    </div>
+
+    <!-- ② 市区町村地図ビュー（都道府県クリック後に表示） -->
+    <div id="view-city">
+      <div id="city-header">
+        <button id="btn-back">← 都道府県に戻る</button>
+        <h2 id="city-title"></h2>
+      </div>
+      <div id="city-map-container"></div>
     </div>
 
     <!-- モード切替トグルスイッチ（画面右上に固定表示） -->
@@ -386,10 +469,11 @@
         .append("path")
         .attr("class", "pref")
         .attr("d", mainPath)
-        .attr("fill", getFill)  // 来訪者数に応じた色を設定
+        .attr("fill", getFill)
         .on("mouseover", onOver)
         .on("mousemove", onMove)
-        .on("mouseout", onOut);
+        .on("mouseout", onOut)
+        .on("click", (event, d) => showCityMap(d.properties.nam_ja)); // クリックで棒グラフへ
 
       // ---- 沖縄インセットの作成 ----
       // clipPath：枠からはみ出した島を非表示にする
@@ -421,10 +505,11 @@
         .append("path")
         .attr("class", "okinawa")
         .attr("d", okinawaPath)
-        .attr("fill", getFill)  // 本土と同じ色スケールを適用
+        .attr("fill", getFill)
         .on("mouseover", onOver)
         .on("mousemove", onMove)
-        .on("mouseout", onOut);
+        .on("mouseout", onOut)
+        .on("click", (event, d) => showCityMap(d.properties.nam_ja));
 
       // 「沖縄県」ラベル
       inset.append("text")
@@ -433,6 +518,129 @@
         .attr("font-size", "10px")
         .attr("fill", "#555")
         .text("沖縄県");
+
+      // ================================================================
+      // 市区町村地図ビューの表示
+      // ================================================================
+
+      // 都道府県名 → 2桁ゼロパディングコード（URL構築に使う）
+      // 例: "北海道" → "01", "東京都" → "13"
+      const prefCodeMap = new Map(
+        csvRows.map(d => [
+          d["都道府県名"],
+          String(+d["都道府県コード"]).padStart(2, "0")
+        ])
+      );
+
+      // 全国市区町村GeoJSON（初回クリック時に取得してキャッシュ）
+      // 都道府県別ファイルは不完全なため、全国一括ファイルを使う
+      const CITY_GEO_URL =
+        "https://raw.githubusercontent.com/smartnews-smri/japan-topography" +
+        "/main/data/municipality/geojson/s0010/N03-21_210101.json";
+      let cityGeoCache = null; // 一度取得したらここに保存して再取得しない
+
+      // 都道府県クリック時：市区町村の地図を描画する（非同期）
+      const showCityMap = async (prefName) => {
+        const prefCode = prefCodeMap.get(prefName);
+
+        // ビューを切り替え・読み込み中を表示
+        document.getElementById("view-map").style.display = "none";
+        document.getElementById("mode-toggle-wrap").style.display = "none";
+        document.getElementById("view-city").style.display = "flex";
+        document.getElementById("city-title").textContent = prefName;
+        tooltip.style("display", "none");
+
+        const container = document.getElementById("city-map-container");
+        container.innerHTML = '<p id="city-loading">市区町村データを読み込み中...</p>';
+
+        // この都道府県の市区町村データをMapに変換
+        // CSV地域コードを5桁ゼロパディングして N03_007 と突合できるようにする
+        const cityDataMap = new Map(
+          csvRows
+            .filter(d => d["都道府県名"] === prefName)
+            .map(d => [
+              String(+d["地域コード"]).padStart(5, "0"),
+              { count: +d["人数"], name: d["地域名称"] }
+            ])
+        );
+
+        // 全国GeoJSONを取得（2回目以降はキャッシュを使用）
+        if (!cityGeoCache) {
+          try {
+            cityGeoCache = await d3.json(CITY_GEO_URL);
+          } catch {
+            container.innerHTML =
+              '<p style="color:#c00;padding:16px 0">市区町村データの読み込みに失敗しました。</p>';
+            return;
+          }
+        }
+
+        // 2桁の都道府県コードで前方一致フィルタ（例: "13" → 13101, 13401 ...）
+        const prefFeatures = cityGeoCache.features.filter(f =>
+          f.properties.N03_007?.startsWith(prefCode)
+        );
+        const prefGeoJson = { type: "FeatureCollection", features: prefFeatures };
+
+        container.innerHTML = "";
+
+        // ---- SVG作成（viewBoxでレスポンシブ） ----
+        const citySvg = d3.select(container)
+          .append("svg")
+          .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
+
+        // この都道府県の全市区町村が収まるよう投影を自動フィット
+        const cityProjection = d3.geoMercator()
+          .fitExtent([[20, 20], [WIDTH - 20, HEIGHT - 20]], prefGeoJson);
+
+        const cityPathGen = d3.geoPath().projection(cityProjection);
+
+        // 色スケール：この都道府県内の最大来訪者数を基準に
+        const maxCount = d3.max([...cityDataMap.values()], v => v.count) || 1;
+        const cityColorScale = d3.scaleSequential()
+          .domain([0, maxCount])
+          .interpolator(redsInterpolator);
+
+        // ---- 市区町村を描画 ----
+        citySvg.selectAll("path.city")
+          .data(prefFeatures)
+          .enter()
+          .append("path")
+          .attr("class", "city")
+          .attr("d", cityPathGen)
+          .attr("fill", f => {
+            const data = cityDataMap.get(f.properties.N03_007);
+            return data ? cityColorScale(data.count) : "#d0d0d0";
+          })
+          .on("mouseover", (event, f) => {
+            const data = cityDataMap.get(f.properties.N03_007);
+            const name = data?.name
+              ?? [f.properties.N03_003, f.properties.N03_004].filter(Boolean).join("")
+              ?? "不明";
+            const countStr = data ? `${fmt(data.count)} 人` : "データなし";
+            tooltip
+              .style("display", "block")
+              .html(`<strong>${name}</strong><br>来訪者数：${countStr}`);
+            d3.select(event.currentTarget)
+              .attr("stroke", "#1a237e")
+              .attr("stroke-width", 1.5);
+          })
+          .on("mousemove", onMove)
+          .on("mouseout", event => {
+            tooltip.style("display", "none");
+            d3.select(event.currentTarget)
+              .attr("stroke", "#fff")
+              .attr("stroke-width", 0.5);
+          });
+      };
+
+      // 「← 都道府県に戻る」ボタン：地図ビューに戻る
+      const showMap = () => {
+        document.getElementById("view-city").style.display = "none";
+        document.getElementById("view-map").style.display = "flex";
+        document.getElementById("mode-toggle-wrap").style.display = "flex";
+      };
+
+      document.getElementById("btn-back").addEventListener("click", showMap);
 
       // ----------------------------------------------------------------
       // トグルスイッチの切り替えイベント
