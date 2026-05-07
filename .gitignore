@@ -1,0 +1,22 @@
+# ========== 原本データ（アプリ動作に不要） ==========
+
+# 観光CSV原本（Shift-JIS）- _utf8.csv 版をアプリが使用するため不要
+data/city2021.csv
+data/city2022.csv
+data/city2023.csv
+data/city2024.csv
+data/city2025.csv
+data/city202601.csv
+data/city202602.csv
+data/city202603.csv
+
+# 人口Excelファイル原本 - population_pref_*.csv に変換済みのため不要
+data/*.xlsx
+
+# 旧人口CSV（年別ファイルに置き換え済み）
+data/population_pref.csv
+
+# ========== 開発ツール ==========
+.claude/
+__pycache__/
+*.pyc
