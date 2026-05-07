@@ -76,13 +76,20 @@
       max-width: 800px;
     }
 
-    /* ========== モード切替トグルスイッチ ==========
-       position: fixed = スクロールしても画面右上に常に固定される
-       スマホ・PCどちらでも地図と重ならず操作しやすい */
-    #mode-toggle-wrap {
+    /* ========== コントロールパネル（右上固定） ==========
+       トグルスイッチと年月セレクターをまとめて右上に固定する */
+    #control-panel {
       position: fixed;
-      top: 70px;  /* ヘッダーの高さ分だけ下げる */
+      top: 70px;
       right: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 10;
+    }
+
+    /* モード切替トグルスイッチ（コントロールパネル内） */
+    #mode-toggle-wrap {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -91,7 +98,31 @@
       border-radius: 20px;
       font-size: 0.8rem;
       box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
-      z-index: 10; /* 地図SVGより手前に表示 */
+    }
+
+    /* ========== 年月セレクター ========== */
+    #date-selector {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    #date-selector select {
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 2px 4px;
+      font-size: 0.8rem;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    #date-selector span {
+      color: #555;
     }
 
     /* トグルのラベル：非アクティブは薄く、アクティブは太字 */
@@ -264,7 +295,7 @@
 
   <!-- ========== ヘッダー ========== -->
   <header>
-    <h1>日本 観光来訪者数マップ（2026年3月）</h1>
+    <h1>日本 観光来訪者数マップ（2026年3月まで）</h1>
   </header>
 
   <!-- ========== メインエリア ========== -->
@@ -286,14 +317,24 @@
       <div id="city-map-container"></div>
     </div>
 
-    <!-- モード切替トグルスイッチ（画面右上に固定表示） -->
-    <div id="mode-toggle-wrap">
-      <span class="toggle-label active" id="label-visitors">来訪者数</span>
-      <label class="toggle-switch">
-        <input type="checkbox" id="mode-toggle">
-        <span class="toggle-knob"></span>
-      </label>
-      <span class="toggle-label" id="label-ratio">人口比</span>
+    <!-- コントロールパネル（画面右上に固定） -->
+    <div id="control-panel">
+      <!-- モード切替トグル -->
+      <div id="mode-toggle-wrap">
+        <span class="toggle-label active" id="label-visitors">来訪者数</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="mode-toggle">
+          <span class="toggle-knob"></span>
+        </label>
+        <span class="toggle-label" id="label-ratio">人口比</span>
+      </div>
+      <!-- 年月セレクター -->
+      <div id="date-selector">
+        <select id="sel-year"></select>
+        <span>年</span>
+        <select id="sel-month"></select>
+        <span>月</span>
+      </div>
     </div>
   </main>
 
@@ -308,26 +349,54 @@
 
   <script>
     // ================================================================
-    // データ取得先
+    // 定数
     // ================================================================
     const MAP_URL = "https://raw.githubusercontent.com/dataofjapan/land/master/japan.topojson";
-    const CSV_URL = "data/city202603_utf8.csv"; // 観光来訪者数（市区町村単位）
-    const POP_URL = "data/population_pref.csv"; // 都道府県別人口（総務省 住民基本台帳）
+    const CITY_GEO_URL =
+      "https://raw.githubusercontent.com/smartnews-smri/japan-topography" +
+      "/main/data/municipality/geojson/s0010/N03-21_210101.json";
 
-    // SVG仮想キャンバスのサイズ（実際の表示サイズはCSSが制御する）
-    const WIDTH  = 800;
-    const HEIGHT = 700;
+    // 利用可能な年月データの一覧
+    const AVAILABLE = {
+      2021: [1,2,3,4,5,6,7,8,9,10,11,12],
+      2022: [1,2,3,4,5,6,7,8,9,10,11,12],
+      2023: [1,2,3,4,5,6,7,8,9,10,11,12],
+      2024: [1,2,3,4,5,6,7,8,9,10,11,12],
+      2025: [1,2,3,4,5,6,7,8,9,10,11,12],
+      2026: [1,2,3],
+    };
 
-    // ----------------------------------------------------------------
-    // 沖縄インセット（左上の小枠）の設定
-    // ----------------------------------------------------------------
-    const INSET_X = 8;
-    const INSET_Y = 8;
-    const INSET_W = 440;
-    const INSET_H = 340;
+    // CSVのURLを返す（2025以前は年ファイル、2026以降は月ファイル）
+    const getCsvUrl = (year, month) => year <= 2025
+      ? `data/city${year}_utf8.csv`
+      : `data/city${year}${String(month).padStart(2,"0")}_utf8.csv`;
 
-    // 現在の表示モード："visitors"（観光者数）or "ratio"（人口比）
+    // 人口CSVのURLを返す
+    const getPopUrl = year => `data/population_pref_${year}.csv`;
+
+    const WIDTH = 800, HEIGHT = 700;
+    const INSET_X = 8, INSET_Y = 8, INSET_W = 440, INSET_H = 340;
+
+    // ================================================================
+    // 可変状態（updateDataで更新される）
+    // ================================================================
     let mode = "visitors";
+    let visitorsMap  = new Map();
+    let ratioMap     = new Map();
+    let currentRows  = []; // 現在選択中の月のCSV行（市区町村ビューで使用）
+    let visitorsScale = () => "#d0d0d0";
+    let ratioScale    = () => "#d0d0d0";
+
+    const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
+    const fmt = n => n.toLocaleString("ja-JP");
+
+    // 現在のモードに応じて塗り色を返す（letなスケールを参照するので関数にする）
+    const getFill = d => {
+      const pref = d.properties.nam_ja;
+      return mode === "visitors"
+        ? visitorsScale(visitorsMap.get(pref) || 0)
+        : ratioScale(ratioMap.get(pref) || 0);
+    };
 
     // SVG要素を作成（viewBoxでレスポンシブ対応）
     const svg = d3.select("#map-container")
@@ -350,89 +419,109 @@
     const okinawaPath = d3.geoPath().projection(okinawaProjection);
 
     // ================================================================
-    // 地図・観光データ・人口データを同時に読み込む
-    // Promise.all = 複数の非同期処理を並行して実行し、全部終わったら次へ進む
+    // 年月セレクターの初期化
     // ================================================================
-    Promise.all([
-      d3.json(MAP_URL),
-      d3.csv(CSV_URL),
-      d3.csv(POP_URL)
-    ]).then(([topology, csvRows, popRows]) => {
+    const selYear  = document.getElementById("sel-year");
+    const selMonth = document.getElementById("sel-month");
 
-      document.getElementById("loading").remove();
+    // 年のオプション（新しい順）
+    Object.keys(AVAILABLE).sort((a, b) => b - a).forEach(y => {
+      const opt = document.createElement("option");
+      opt.value = y;
+      opt.textContent = `${y}年`;
+      if (+y === 2026) opt.selected = true;
+      selYear.appendChild(opt);
+    });
 
-      // ----------------------------------------------------------------
-      // 観光CSVを都道府県ごとの来訪者数合計に集計する
-      // 結果は Map（辞書）形式：{ "北海道" => 1234567, ... }
-      // ----------------------------------------------------------------
-      const visitorsMap = d3.rollup(
-        csvRows,
+    // 月のオプションを更新（年が変わると利用可能な月が変わる）
+    const updateMonthOptions = (year, preferMonth = null) => {
+      selMonth.innerHTML = "";
+      const months = AVAILABLE[year] || [];
+      months.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = `${m}月`;
+        // 指定月があればそれを選択、なければ最新月
+        if (preferMonth !== null ? m === preferMonth : m === months[months.length - 1]) {
+          opt.selected = true;
+        }
+        selMonth.appendChild(opt);
+      });
+    };
+    updateMonthOptions(2026, 3); // 初期値：2026年3月
+
+    selYear.addEventListener("change", () => {
+      const y = +selYear.value;
+      updateMonthOptions(y); // 最新月を自動選択
+      updateData(y, +selMonth.value);
+    });
+    selMonth.addEventListener("change", () => {
+      updateData(+selYear.value, +selMonth.value);
+    });
+
+    // ================================================================
+    // データ更新関数：年月が変わるたびに呼ばれる
+    // ================================================================
+    const updateData = async (year, month) => {
+      const csvUrl = getCsvUrl(year, month);
+      const popUrl = getPopUrl(year);
+
+      let csvRows, popRows;
+      try {
+        [csvRows, popRows] = await Promise.all([d3.csv(csvUrl), d3.csv(popUrl)]);
+      } catch {
+        console.error("データ読み込み失敗:", csvUrl, popUrl);
+        return;
+      }
+
+      // 2025以前の年ファイルは月でフィルタ、2026以降は月ファイルなのでそのまま
+      currentRows = year <= 2025
+        ? csvRows.filter(d => +d["月"] === month)
+        : csvRows;
+
+      // 都道府県ごとの来訪者数合計
+      visitorsMap = d3.rollup(
+        currentRows,
         rows => d3.sum(rows, d => +d["人数"]),
         d => d["都道府県名"]
       );
 
-      // ----------------------------------------------------------------
-      // 人口CSVを { "北海道" => 5044825, ... } の辞書に変換する
-      // ----------------------------------------------------------------
+      // 人口比率
       const popMap = new Map(popRows.map(d => [d["都道府県名"], +d["人口"]]));
-
-      // ----------------------------------------------------------------
-      // 人口比率を計算する：来訪者数 ÷ 人口 × 100 = 「人口100人中X人」
-      // 絶対数ではなく比率にすることで東京一極集中を避けられる
-      // ----------------------------------------------------------------
-      const ratioMap = new Map();
+      ratioMap = new Map();
       for (const [pref, visitors] of visitorsMap) {
         const pop = popMap.get(pref);
         if (pop) ratioMap.set(pref, (visitors / pop) * 100);
       }
 
-      // ----------------------------------------------------------------
-      // 連続赤スケール：最小値→薄い赤、最大値→濃い赤
-      //
-      // domain を [0, 最大値] でなく [最小値, 最大値] にする理由：
-      // 全都道府県に必ず来訪者がいるため 0 を使うと色の差が潰れる。
-      // 実際のデータの幅だけを使うことで赤のグラデーションをフルに活用できる。
-      //
-      // interpolateReds(0.2 + 0.8 * t) にする理由：
-      // t=0 の素の interpolateReds はほぼ白になるため、
-      // 下限を 0.2 にずらして最小値でも「薄い赤」が見えるようにする。
-      // ----------------------------------------------------------------
-      const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
-
-      const visitorsScale = d3.scaleSequential()
+      // 色スケールを更新
+      visitorsScale = d3.scaleSequential()
         .domain([d3.min(visitorsMap.values()), d3.max(visitorsMap.values())])
         .interpolator(redsInterpolator);
 
-      const ratioScale = d3.scaleSequential()
+      ratioScale = d3.scaleSequential()
         .domain([d3.min(ratioMap.values()), d3.max(ratioMap.values())])
         .interpolator(redsInterpolator);
 
-      // 現在のモードに応じて塗り色を返すヘルパー関数
-      const getFill = d => {
-        const pref = d.properties.nam_ja;
-        return mode === "visitors"
-          ? visitorsScale(visitorsMap.get(pref) || 0)
-          : ratioScale(ratioMap.get(pref) || 0);
-      };
+      // 全パスを再塗色
+      svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
+    };
 
-      // 数値を「1,234,567」形式にフォーマットするヘルパー関数
-      const fmt = n => n.toLocaleString("ja-JP");
+    // ================================================================
+    // 地図データ（TopoJSON）読み込み → パスを一度だけ描画
+    // ================================================================
+    d3.json(MAP_URL).then(topology => {
+      document.getElementById("loading").remove();
 
-      // TopoJSON → GeoJSONに変換し、本土と沖縄に分ける
       const features = topojson.feature(topology, topology.objects.japan).features;
-      const mainland  = features.filter(f => f.properties.nam_ja !== "沖縄県");
-      const okinawa   = features.filter(f => f.properties.nam_ja === "沖縄県");
+      const mainland = features.filter(f => f.properties.nam_ja !== "沖縄県");
+      const okinawa  = features.filter(f => f.properties.nam_ja === "沖縄県");
 
       const tooltip = d3.select("#tooltip");
 
-      // ----------------------------------------------------------------
-      // マウスイベントのハンドラ（本土・沖縄で共通）
-      // ----------------------------------------------------------------
-
-      // カーソルが乗ったとき：境界線を強調＋ツールチップ表示
       const onOver = (event, d) => {
         d3.select(event.currentTarget)
-          .attr("stroke", "#1a237e")   // 境界線を紺色に
+          .attr("stroke", "#1a237e")
           .attr("stroke-width", 2);
         const pref     = d.properties.nam_ja;
         const visitors = visitorsMap.get(pref) || 0;
@@ -443,40 +532,37 @@
           .html(
             `<strong>${pref}</strong><br>` +
             `来訪者数：${fmt(visitors)} 人<br>` +
-            `人口比率：${ratioStr}%（人口100人中${ratioStr}人）`
+            `人口比率：${ratioStr}%`
           );
       };
 
-      // カーソルが動いたとき：ツールチップをカーソルの右上に追従
-      const onMove = (event) => {
+      const onMove = event => {
         tooltip
           .style("left", (event.clientX + 14) + "px")
           .style("top",  (event.clientY - 34) + "px");
       };
 
-      // カーソルが離れたとき：境界線を元に戻す＋ツールチップ非表示
-      const onOut = (event) => {
+      const onOut = event => {
         d3.select(event.currentTarget)
           .attr("stroke", "#fff")
           .attr("stroke-width", 0.5);
         tooltip.style("display", "none");
       };
 
-      // ---- 本土の都道府県を描画 ----
+      // ---- 本土描画（初期色は灰色。updateDataで上書きされる） ----
       svg.selectAll("path.pref")
         .data(mainland)
         .enter()
         .append("path")
         .attr("class", "pref")
         .attr("d", mainPath)
-        .attr("fill", getFill)
+        .attr("fill", "#d0d0d0")
         .on("mouseover", onOver)
         .on("mousemove", onMove)
         .on("mouseout", onOut)
-        .on("click", (event, d) => showCityMap(d.properties.nam_ja)); // クリックで棒グラフへ
+        .on("click", (event, d) => showCityMap(d.properties.nam_ja));
 
-      // ---- 沖縄インセットの作成 ----
-      // clipPath：枠からはみ出した島を非表示にする
+      // ---- 沖縄インセット ----
       svg.append("defs")
         .append("clipPath")
         .attr("id", "okinawa-clip")
@@ -487,7 +573,6 @@
       const inset = svg.append("g")
         .attr("transform", `translate(${INSET_X}, ${INSET_Y})`);
 
-      // 背景枠
       inset.append("rect")
         .attr("width", INSET_W)
         .attr("height", INSET_H)
@@ -496,7 +581,6 @@
         .attr("stroke-width", 1)
         .attr("rx", 3);
 
-      // 沖縄の島々を描画（clipPathで枠外を切り抜き）
       inset.append("g")
         .attr("clip-path", "url(#okinawa-clip)")
         .selectAll("path.okinawa")
@@ -505,13 +589,12 @@
         .append("path")
         .attr("class", "okinawa")
         .attr("d", okinawaPath)
-        .attr("fill", getFill)
+        .attr("fill", "#d0d0d0")
         .on("mouseover", onOver)
         .on("mousemove", onMove)
         .on("mouseout", onOut)
         .on("click", (event, d) => showCityMap(d.properties.nam_ja));
 
-      // 「沖縄県」ラベル
       inset.append("text")
         .attr("x", 6)
         .attr("y", INSET_H - 6)
@@ -519,33 +602,22 @@
         .attr("fill", "#555")
         .text("沖縄県");
 
+      // 初期データ読み込み（2026年3月）
+      updateData(2026, 3);
+
       // ================================================================
-      // 市区町村地図ビューの表示
+      // 市区町村地図ビュー
       // ================================================================
+      let cityGeoCache = null;
 
-      // 都道府県名 → 2桁ゼロパディングコード（URL構築に使う）
-      // 例: "北海道" → "01", "東京都" → "13"
-      const prefCodeMap = new Map(
-        csvRows.map(d => [
-          d["都道府県名"],
-          String(+d["都道府県コード"]).padStart(2, "0")
-        ])
-      );
-
-      // 全国市区町村GeoJSON（初回クリック時に取得してキャッシュ）
-      // 都道府県別ファイルは不完全なため、全国一括ファイルを使う
-      const CITY_GEO_URL =
-        "https://raw.githubusercontent.com/smartnews-smri/japan-topography" +
-        "/main/data/municipality/geojson/s0010/N03-21_210101.json";
-      let cityGeoCache = null; // 一度取得したらここに保存して再取得しない
-
-      // 都道府県クリック時：市区町村の地図を描画する（非同期）
       const showCityMap = async (prefName) => {
-        const prefCode = prefCodeMap.get(prefName);
+        // 都道府県コードを currentRows から取得
+        const row = currentRows.find(d => d["都道府県名"] === prefName);
+        if (!row) return;
+        const prefCode = String(+row["都道府県コード"]).padStart(2, "0");
 
-        // ビューを切り替え・読み込み中を表示
         document.getElementById("view-map").style.display = "none";
-        document.getElementById("mode-toggle-wrap").style.display = "none";
+        document.getElementById("control-panel").style.display = "none";
         document.getElementById("view-city").style.display = "flex";
         document.getElementById("city-title").textContent = prefName;
         tooltip.style("display", "none");
@@ -553,10 +625,8 @@
         const container = document.getElementById("city-map-container");
         container.innerHTML = '<p id="city-loading">市区町村データを読み込み中...</p>';
 
-        // この都道府県の市区町村データをMapに変換
-        // CSV地域コードを5桁ゼロパディングして N03_007 と突合できるようにする
         const cityDataMap = new Map(
-          csvRows
+          currentRows
             .filter(d => d["都道府県名"] === prefName)
             .map(d => [
               String(+d["地域コード"]).padStart(5, "0"),
@@ -564,7 +634,6 @@
             ])
         );
 
-        // 全国GeoJSONを取得（2回目以降はキャッシュを使用）
         if (!cityGeoCache) {
           try {
             cityGeoCache = await d3.json(CITY_GEO_URL);
@@ -575,7 +644,6 @@
           }
         }
 
-        // 2桁の都道府県コードで前方一致フィルタ（例: "13" → 13101, 13401 ...）
         const prefFeatures = cityGeoCache.features.filter(f =>
           f.properties.N03_007?.startsWith(prefCode)
         );
@@ -583,24 +651,20 @@
 
         container.innerHTML = "";
 
-        // ---- SVG作成（viewBoxでレスポンシブ） ----
         const citySvg = d3.select(container)
           .append("svg")
           .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
 
-        // この都道府県の全市区町村が収まるよう投影を自動フィット
         const cityProjection = d3.geoMercator()
           .fitExtent([[20, 20], [WIDTH - 20, HEIGHT - 20]], prefGeoJson);
 
         const cityPathGen = d3.geoPath().projection(cityProjection);
 
-        // 色スケール：この都道府県内の最大来訪者数を基準に
         const maxCount = d3.max([...cityDataMap.values()], v => v.count) || 1;
         const cityColorScale = d3.scaleSequential()
           .domain([0, maxCount])
           .interpolator(redsInterpolator);
 
-        // ---- 市区町村を描画 ----
         citySvg.selectAll("path.city")
           .data(prefFeatures)
           .enter()
@@ -633,24 +697,18 @@
           });
       };
 
-      // 「← 都道府県に戻る」ボタン：地図ビューに戻る
       const showMap = () => {
         document.getElementById("view-city").style.display = "none";
         document.getElementById("view-map").style.display = "flex";
-        document.getElementById("mode-toggle-wrap").style.display = "flex";
+        document.getElementById("control-panel").style.display = "flex";
       };
 
       document.getElementById("btn-back").addEventListener("click", showMap);
 
-      // ----------------------------------------------------------------
-      // トグルスイッチの切り替えイベント
-      // モードを更新 → 全都道府県を再塗色 → ラベルの強調を切り替え
-      // ----------------------------------------------------------------
+      // トグルスイッチ
       document.getElementById("mode-toggle").addEventListener("change", function() {
         mode = this.checked ? "ratio" : "visitors";
-        // SVG上の全都道府県パスを新しいモードの色で塗り直す
         svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
-        // ラベルのアクティブ状態を切り替える
         document.getElementById("label-visitors").classList.toggle("active", mode === "visitors");
         document.getElementById("label-ratio").classList.toggle("active",   mode === "ratio");
       });
