@@ -125,6 +125,37 @@
       color: #555;
     }
 
+    /* ========== 比較ボタン ========== */
+    #comparison-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .comp-btn {
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid #ccc;
+      border-radius: 20px;
+      padding: 5px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      color: #555;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+      transition: background 0.2s, color 0.2s;
+      text-align: center;
+    }
+
+    .comp-btn:hover {
+      background: #f0f0f0;
+    }
+
+    /* アクティブ状態：紺色 */
+    .comp-btn.active {
+      background: #1a237e;
+      color: white;
+      border-color: #1a237e;
+    }
+
     /* トグルのラベル：非アクティブは薄く、アクティブは太字 */
     .toggle-label {
       color: #aaa;
@@ -335,6 +366,11 @@
         <select id="sel-month"></select>
         <span>月</span>
       </div>
+      <!-- 比較ボタン -->
+      <div id="comparison-btns">
+        <button class="comp-btn" id="btn-yoy">前年比</button>
+        <button class="comp-btn" id="btn-mom">前月比</button>
+      </div>
     </div>
   </main>
 
@@ -390,12 +426,97 @@
     const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
     const fmt = n => n.toLocaleString("ja-JP");
 
-    // 現在のモードに応じて塗り色を返す（letなスケールを参照するので関数にする）
+    // ================================================================
+    // 比較モードのステート
+    // ================================================================
+    let comparisonMode  = null;      // null | "yoy"（前年比）| "mom"（前月比）
+    let comparisonMap   = new Map(); // 都道府県名 → 変化率（%）
+    let comparisonScale = () => "#d0d0d0";
+
+    // 発散型インターポレーター：青（減少）→ グレー（変化なし）→ 赤（増加）
+    const compInterpolator = d3.piecewise(d3.interpolateRgb, ["#2166ac", "#d0d0d0", "#ca0020"]);
+
+    // 現在のモードに応じて塗り色を返す
     const getFill = d => {
       const pref = d.properties.nam_ja;
+      if (comparisonMode !== null) {
+        const change = comparisonMap.get(pref);
+        return change != null ? comparisonScale(change) : "#d0d0d0";
+      }
       return mode === "visitors"
         ? visitorsScale(visitorsMap.get(pref) || 0)
         : ratioScale(ratioMap.get(pref) || 0);
+    };
+
+    // ================================================================
+    // 比較モードの開始・終了
+    // ================================================================
+    const activateComparison = async (type) => {
+      const year  = +selYear.value;
+      const month = +selMonth.value;
+
+      // 比較対象の年月を計算
+      let prevYear, prevMonth;
+      if (type === "yoy") {
+        prevYear = year - 1;
+        prevMonth = month;
+      } else {
+        prevYear  = month === 1 ? year - 1 : year;
+        prevMonth = month === 1 ? 12 : month - 1;
+      }
+
+      // データが存在するか確認
+      if (!AVAILABLE[prevYear] || !AVAILABLE[prevYear].includes(prevMonth)) {
+        alert(`${prevYear}年${prevMonth}月のデータがないため比較できません。`);
+        return;
+      }
+
+      // 比較対象のCSVを読み込む
+      let prevCsvRows;
+      try {
+        prevCsvRows = await d3.csv(getCsvUrl(prevYear, prevMonth));
+      } catch {
+        alert("比較データの読み込みに失敗しました。");
+        return;
+      }
+      const prevRows = prevYear <= 2025
+        ? prevCsvRows.filter(d => +d["月"] === prevMonth)
+        : prevCsvRows;
+
+      // 前期の都道府県別来訪者数
+      const prevVisitorsMap = d3.rollup(
+        prevRows,
+        rows => d3.sum(rows, d => +d["人数"]),
+        d => d["都道府県名"]
+      );
+
+      // 変化率（%）を計算して comparisonMap に格納
+      comparisonMap = new Map();
+      for (const [pref, current] of visitorsMap) {
+        const prev = prevVisitorsMap.get(pref);
+        if (prev && prev > 0) {
+          comparisonMap.set(pref, ((current - prev) / prev) * 100);
+        }
+      }
+
+      // 発散型スケール：domain を [最小値, 0, 最大値] に設定
+      // ※ Math.min/max で 0 を必ず含める
+      //   → 全都道府県が増加（最小値 > 0）でも domain が壊れない
+      const minChange = Math.min(d3.min(comparisonMap.values()) ?? 0, 0);
+      const maxChange = Math.max(d3.max(comparisonMap.values()) ?? 0, 0);
+      comparisonScale = d3.scaleDiverging()
+        .domain([minChange === 0 ? -0.01 : minChange, 0, maxChange === 0 ? 0.01 : maxChange])
+        .interpolator(compInterpolator);
+
+      comparisonMode = type;
+      svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
+    };
+
+    const deactivateComparison = () => {
+      comparisonMode = null;
+      document.getElementById("btn-yoy").classList.remove("active");
+      document.getElementById("btn-mom").classList.remove("active");
+      svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
     };
 
     // SVG要素を作成（viewBoxでレスポンシブ対応）
@@ -452,11 +573,26 @@
 
     selYear.addEventListener("change", () => {
       const y = +selYear.value;
-      updateMonthOptions(y); // 最新月を自動選択
+      updateMonthOptions(y);
       updateData(y, +selMonth.value);
     });
     selMonth.addEventListener("change", () => {
       updateData(+selYear.value, +selMonth.value);
+    });
+
+    // 比較ボタンのイベント（アクティブなら解除、非アクティブなら起動）
+    ["btn-yoy", "btn-mom"].forEach(id => {
+      document.getElementById(id).addEventListener("click", function() {
+        const type = id === "btn-yoy" ? "yoy" : "mom";
+        if (comparisonMode === type) {
+          deactivateComparison();
+        } else {
+          document.getElementById("btn-yoy").classList.remove("active");
+          document.getElementById("btn-mom").classList.remove("active");
+          this.classList.add("active");
+          activateComparison(type);
+        }
+      });
     });
 
     // ================================================================
@@ -505,6 +641,11 @@
 
       // 全パスを再塗色
       svg.selectAll("path.pref, path.okinawa").attr("fill", getFill);
+
+      // 比較モードが有効なら年月変更後に自動で再計算
+      if (comparisonMode !== null) {
+        await activateComparison(comparisonMode);
+      }
     };
 
     // ================================================================
@@ -527,10 +668,24 @@
         const visitors = visitorsMap.get(pref) || 0;
         const ratio    = ratioMap.get(pref);
         const ratioStr = ratio != null ? ratio.toFixed(1) : "—";
+
+        // 比較モード中は変化率を先頭に追加
+        let compLine = "";
+        if (comparisonMode !== null) {
+          const change = comparisonMap.get(pref);
+          if (change != null) {
+            const sign  = change >= 0 ? "+" : "";
+            const label = comparisonMode === "yoy" ? "前年比" : "前月比";
+            const arrow = change >= 0 ? "▲" : "▼";
+            compLine = `${label}：${arrow} ${sign}${change.toFixed(1)}%<br>`;
+          }
+        }
+
         tooltip
           .style("display", "block")
           .html(
             `<strong>${pref}</strong><br>` +
+            compLine +
             `来訪者数：${fmt(visitors)} 人<br>` +
             `人口比率：${ratioStr}%`
           );
