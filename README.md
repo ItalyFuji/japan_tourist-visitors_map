@@ -34,6 +34,21 @@
 
 ---
 
+## GitHub Pages で公開する
+
+1. このリポジトリを自分のGitHubにプッシュする
+2. リポジトリの **Settings → Pages** を開く
+3. **Source** を `Deploy from a branch`、**Branch** を `main / (root)` に設定して **Save**
+4. 数分後に以下のURLで公開される：
+
+```
+https://{ユーザー名}.github.io/japan_tourist-visitors_map/
+```
+
+> ローカルサーバー不要で動作します。URLをそのまま共有できます。
+
+---
+
 ## ローカルで動かす
 
 ```bash
