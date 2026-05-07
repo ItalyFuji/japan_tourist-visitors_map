@@ -274,21 +274,22 @@
       background: #283593;
     }
 
-    #chart-title {
+    #city-title {
       font-size: 1.2rem;
       font-weight: bold;
       color: #333;
+      flex: 1; /* 余白を全部使ってボタンを右端に押し出す */
     }
 
-    /* ========== 市区町村地図コンテナ ========== */
+    /* ========== 統計グラフコンテナ ========== */
     #city-map-container {
       width: 100%;
+      overflow-x: auto; /* 棒が多い場合は横スクロール */
     }
 
     #city-map-container svg {
-      width: 100%;
-      height: auto;
       display: block;
+      height: auto;
     }
 
     #city-map-container path.city {
@@ -344,6 +345,8 @@
       <div id="city-header">
         <button id="btn-back">← 都道府県に戻る</button>
         <h2 id="city-title"></h2>
+        <button id="btn-chart-period" class="comp-btn">年単位</button>
+        <button id="btn-chart-mode" class="comp-btn active">来訪者数</button>
       </div>
       <div id="city-map-container"></div>
     </div>
@@ -425,6 +428,11 @@
 
     const redsInterpolator = t => d3.interpolateReds(0.2 + 0.8 * t);
     const fmt = n => n.toLocaleString("ja-JP");
+
+    // 都道府県グラフ用のステート
+    let historyCache  = null;        // 全期間データのキャッシュ
+    let chartMode     = "visitors";  // "visitors" | "ratio"
+    let chartPeriod   = "monthly";   // "monthly" | "annual"
 
     // ================================================================
     // 比較モードのステート
@@ -715,7 +723,7 @@
         .on("mouseover", onOver)
         .on("mousemove", onMove)
         .on("mouseout", onOut)
-        .on("click", (event, d) => showCityMap(d.properties.nam_ja));
+        .on("click", (event, d) => showPrefChart(d.properties.nam_ja));
 
       // ---- 沖縄インセット ----
       svg.append("defs")
@@ -748,7 +756,7 @@
         .on("mouseover", onOver)
         .on("mousemove", onMove)
         .on("mouseout", onOut)
-        .on("click", (event, d) => showCityMap(d.properties.nam_ja));
+        .on("click", (event, d) => showPrefChart(d.properties.nam_ja));
 
       inset.append("text")
         .attr("x", 6)
@@ -761,96 +769,247 @@
       updateData(2026, 3);
 
       // ================================================================
-      // 市区町村地図ビュー
+      // 都道府県の歴史データ棒グラフ
       // ================================================================
-      let cityGeoCache = null;
 
-      const showCityMap = async (prefName) => {
-        // 都道府県コードを currentRows から取得
-        const row = currentRows.find(d => d["都道府県名"] === prefName);
-        if (!row) return;
-        const prefCode = String(+row["都道府県コード"]).padStart(2, "0");
+      // 年ごとの色（古い年ほど薄い赤 → 新しい年ほど濃い赤）
+      const YEAR_COLORS = {
+        2021: "#ffcdd2", 2022: "#ef9a9a", 2023: "#e57373",
+        2024: "#ef5350", 2025: "#c62828", 2026: "#b71c1c",
+      };
 
+      // 棒グラフ描画（月単位・年単位どちらでも対応）
+      const drawBarChart = (container, data) => {
+        container.innerHTML = "";
+
+        const margin = { top: 44, right: 16, bottom: 54, left: 76 };
+        const VH   = 380;
+        const H    = VH - margin.top - margin.bottom;
+
+        // 月単位は棒が多いので1本あたりのステップを固定してSVGを広げる
+        const stepPx = chartPeriod === "monthly" ? 20 : 72;
+        const W    = data.length * stepPx;
+        const VW   = W + margin.left + margin.right;
+
+        const chartSvg = d3.select(container)
+          .append("svg")
+          .attr("width", VW).attr("height", VH); // viewBoxではなく固定px
+
+        const g = chartSvg.append("g")
+          .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const getValue = d => chartMode === "visitors" ? d.visitors : (d.ratio ?? 0);
+
+        const xScale = d3.scaleBand()
+          .domain(data.map(d => d.id))
+          .range([0, W])
+          .padding(chartPeriod === "monthly" ? 0.12 : 0.3);
+
+        const maxVal = d3.max(data, getValue) || 1;
+        const yScale = d3.scaleLinear()
+          .domain([0, maxVal * 1.12])
+          .range([H, 0]);
+
+        // グリッド
+        g.append("g")
+          .call(d3.axisLeft(yScale).ticks(5).tickSize(-W).tickFormat(""))
+          .call(ax => ax.select(".domain").remove())
+          .selectAll("line").attr("stroke", "#eee");
+
+        // Y 軸
+        const yFmt = chartMode === "visitors"
+          ? d => d >= 1e6 ? (d/1e6).toFixed(1)+"M" : (d/1e4).toFixed(0)+"万"
+          : d => d.toFixed(1)+"%";
+        g.append("g")
+          .call(d3.axisLeft(yScale).ticks(5).tickFormat(yFmt))
+          .call(ax => ax.select(".domain").remove())
+          .selectAll("text").attr("font-size", "10px");
+
+        // X 軸ラベル
+        const xAxis = d3.axisBottom(xScale).tickSize(0)
+          .tickFormat(d => {
+            const item = data.find(r => r.id === d);
+            if (!item) return "";
+            if (chartPeriod === "annual") return item.xLabel;
+            // 月単位：3の倍数月のみ表示（混雑を防ぐ）
+            return item.month % 3 === 1 ? `${item.month}月` : "";
+          });
+        g.append("g")
+          .attr("transform", `translate(0,${H})`)
+          .call(xAxis)
+          .call(ax => ax.select(".domain").remove())
+          .selectAll("text")
+          .attr("font-size", "9px")
+          .attr("dy", "1.2em");
+
+        // 年グループのラベルと区切り線
+        const years = [...new Set(data.map(d => d.year))];
+        years.forEach(year => {
+          const group = data.filter(d => d.year === year);
+          const x0 = xScale(group[0].id);
+          const x1 = xScale(group[group.length - 1].id) + xScale.bandwidth();
+          const xMid = (x0 + x1) / 2;
+
+          // 年ラベル（各グループの中央上）
+          g.append("text")
+            .attr("x", xMid).attr("y", -26)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "11px").attr("font-weight", "bold")
+            .attr("fill", YEAR_COLORS[year] === "#ffcdd2" ? "#999" : YEAR_COLORS[year])
+            .text(`${year}年`);
+
+          // 左端に区切り線（最初の年を除く）
+          if (year !== years[0]) {
+            g.append("line")
+              .attr("x1", x0 - xScale.step() * 0.3)
+              .attr("x2", x0 - xScale.step() * 0.3)
+              .attr("y1", -32).attr("y2", H)
+              .attr("stroke", "#ccc").attr("stroke-dasharray", "3,3");
+          }
+        });
+
+        // バー
+        g.selectAll("rect.bar")
+          .data(data)
+          .enter()
+          .append("rect")
+          .attr("class", "bar")
+          .attr("x", d => xScale(d.id))
+          .attr("y", d => yScale(getValue(d)))
+          .attr("width", xScale.bandwidth())
+          .attr("height", d => H - yScale(getValue(d)))
+          .attr("fill", d => YEAR_COLORS[d.year] ?? "#ef9a9a")
+          .attr("rx", 1)
+          .on("mouseover", (event, d) => {
+            tooltip.style("display", "block")
+              .html(
+                `<strong>${d.tooltipLabel}</strong><br>` +
+                `来訪者数：${fmt(d.visitors)} 人` +
+                (d.ratio != null ? `<br>人口比率：${d.ratio.toFixed(2)}%` : "")
+              );
+          })
+          .on("mousemove", onMove)
+          .on("mouseout", () => tooltip.style("display", "none"));
+      };
+
+      // データを月単位・年単位の2種類まとめて組み立て
+      const buildChartDatasets = (prefName) => {
+        const monthlyData = [];
+        const annualData  = [];
+
+        [2021, 2022, 2023, 2024, 2025].forEach((year, yi) => {
+          const popRow = historyCache.pops[yi].find(d => d["都道府県名"] === prefName);
+          const pop    = popRow ? +popRow["人口"] : null;
+          let yearTotal = 0;
+
+          for (let m = 1; m <= 12; m++) {
+            const rows  = historyCache.annual[yi].filter(
+              d => d["都道府県名"] === prefName && +d["月"] === m
+            );
+            const total = d3.sum(rows, d => +d["人数"]);
+            yearTotal  += total;
+            monthlyData.push({
+              id: `${year}-${m}`, year, month: m,
+              xLabel: `${year}/${m}月`,
+              tooltipLabel: `${year}年${m}月`,
+              visitors: total,
+              ratio: pop && total ? (total / pop) * 100 : null,
+            });
+          }
+          annualData.push({
+            id: `${year}`, year, month: null,
+            xLabel: `${year}年`,
+            tooltipLabel: `${year}年（年間合計）`,
+            visitors: yearTotal,
+            ratio: pop && yearTotal ? (yearTotal / pop) * 100 : null,
+          });
+        });
+
+        // 2026年は常に月別
+        const pop26Row = historyCache.pops[5].find(d => d["都道府県名"] === prefName);
+        const pop26    = pop26Row ? +pop26Row["人口"] : null;
+        [1, 2, 3].forEach((month, i) => {
+          const rows  = historyCache.monthly26[i].filter(d => d["都道府県名"] === prefName);
+          const total = d3.sum(rows, d => +d["人数"]);
+          const item  = {
+            id: `2026-${month}`, year: 2026, month,
+            xLabel: `${month}月`,
+            tooltipLabel: `2026年${month}月`,
+            visitors: total,
+            ratio: pop26 && total ? (total / pop26) * 100 : null,
+          };
+          monthlyData.push(item);
+          annualData.push(item);
+        });
+
+        return { monthlyData, annualData };
+      };
+
+      // 都道府県クリック時：歴史グラフを表示
+      const showPrefChart = async (prefName) => {
         document.getElementById("view-map").style.display = "none";
         document.getElementById("control-panel").style.display = "none";
         document.getElementById("view-city").style.display = "flex";
-        document.getElementById("city-title").textContent = prefName;
+        document.getElementById("city-title").textContent = `${prefName}　来訪者数の推移`;
         tooltip.style("display", "none");
 
         const container = document.getElementById("city-map-container");
-        container.innerHTML = '<p id="city-loading">市区町村データを読み込み中...</p>';
+        container.innerHTML = '<p id="city-loading">データを読み込み中...</p>';
 
-        const cityDataMap = new Map(
-          currentRows
-            .filter(d => d["都道府県名"] === prefName)
-            .map(d => [
-              String(+d["地域コード"]).padStart(5, "0"),
-              { count: +d["人数"], name: d["地域名称"] }
-            ])
-        );
-
-        if (!cityGeoCache) {
+        if (!historyCache) {
           try {
-            cityGeoCache = await d3.json(CITY_GEO_URL);
+            const [c21, c22, c23, c24, c25, c261, c262, c263,
+                   p21, p22, p23, p24, p25, p26] = await Promise.all([
+              d3.csv("data/city2021_utf8.csv"),
+              d3.csv("data/city2022_utf8.csv"),
+              d3.csv("data/city2023_utf8.csv"),
+              d3.csv("data/city2024_utf8.csv"),
+              d3.csv("data/city2025_utf8.csv"),
+              d3.csv("data/city202601_utf8.csv"),
+              d3.csv("data/city202602_utf8.csv"),
+              d3.csv("data/city202603_utf8.csv"),
+              d3.csv("data/population_pref_2021.csv"),
+              d3.csv("data/population_pref_2022.csv"),
+              d3.csv("data/population_pref_2023.csv"),
+              d3.csv("data/population_pref_2024.csv"),
+              d3.csv("data/population_pref_2025.csv"),
+              d3.csv("data/population_pref_2026.csv"),
+            ]);
+            historyCache = {
+              annual:    [c21, c22, c23, c24, c25],
+              monthly26: [c261, c262, c263],
+              pops:      [p21, p22, p23, p24, p25, p26],
+            };
           } catch {
-            container.innerHTML =
-              '<p style="color:#c00;padding:16px 0">市区町村データの読み込みに失敗しました。</p>';
+            container.innerHTML = '<p style="color:#c00;padding:16px 0">データ読み込みに失敗しました。</p>';
             return;
           }
         }
 
-        const prefFeatures = cityGeoCache.features.filter(f =>
-          f.properties.N03_007?.startsWith(prefCode)
-        );
-        const prefGeoJson = { type: "FeatureCollection", features: prefFeatures };
-
-        container.innerHTML = "";
-
-        const citySvg = d3.select(container)
-          .append("svg")
-          .attr("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
-
-        const cityProjection = d3.geoMercator()
-          .fitExtent([[20, 20], [WIDTH - 20, HEIGHT - 20]], prefGeoJson);
-
-        const cityPathGen = d3.geoPath().projection(cityProjection);
-
-        const maxCount = d3.max([...cityDataMap.values()], v => v.count) || 1;
-        const cityColorScale = d3.scaleSequential()
-          .domain([0, maxCount])
-          .interpolator(redsInterpolator);
-
-        citySvg.selectAll("path.city")
-          .data(prefFeatures)
-          .enter()
-          .append("path")
-          .attr("class", "city")
-          .attr("d", cityPathGen)
-          .attr("fill", f => {
-            const data = cityDataMap.get(f.properties.N03_007);
-            return data ? cityColorScale(data.count) : "#d0d0d0";
-          })
-          .on("mouseover", (event, f) => {
-            const data = cityDataMap.get(f.properties.N03_007);
-            const name = data?.name
-              ?? [f.properties.N03_003, f.properties.N03_004].filter(Boolean).join("")
-              ?? "不明";
-            const countStr = data ? `${fmt(data.count)} 人` : "データなし";
-            tooltip
-              .style("display", "block")
-              .html(`<strong>${name}</strong><br>来訪者数：${countStr}`);
-            d3.select(event.currentTarget)
-              .attr("stroke", "#1a237e")
-              .attr("stroke-width", 1.5);
-          })
-          .on("mousemove", onMove)
-          .on("mouseout", event => {
-            tooltip.style("display", "none");
-            d3.select(event.currentTarget)
-              .attr("stroke", "#fff")
-              .attr("stroke-width", 0.5);
-          });
+        const datasets = buildChartDatasets(prefName);
+        container.__datasets = datasets;
+        drawBarChart(container, chartPeriod === "monthly" ? datasets.monthlyData : datasets.annualData);
       };
+
+      // グラフ内ボタン：モード切替（来訪者数 ↔ 人口比）
+      document.getElementById("btn-chart-mode").addEventListener("click", function() {
+        chartMode = chartMode === "visitors" ? "ratio" : "visitors";
+        this.textContent = chartMode === "visitors" ? "来訪者数" : "人口比";
+        this.classList.toggle("active", chartMode === "visitors");
+        const container = document.getElementById("city-map-container");
+        const datasets  = container.__datasets;
+        if (datasets) drawBarChart(container, chartPeriod === "monthly" ? datasets.monthlyData : datasets.annualData);
+      });
+
+      // グラフ内ボタン：期間切替（月単位 ↔ 年単位）
+      document.getElementById("btn-chart-period").addEventListener("click", function() {
+        chartPeriod = chartPeriod === "monthly" ? "annual" : "monthly";
+        this.textContent = chartPeriod === "monthly" ? "年単位" : "月単位";
+        this.classList.toggle("active", chartPeriod === "annual");
+        const container = document.getElementById("city-map-container");
+        const datasets  = container.__datasets;
+        if (datasets) drawBarChart(container, chartPeriod === "monthly" ? datasets.monthlyData : datasets.annualData);
+      });
 
       const showMap = () => {
         document.getElementById("view-city").style.display = "none";
